@@ -1,15 +1,6 @@
 ﻿# Install core dependencies directly
 pip install cryptography argon2-cffi pyyaml python-dateutil psutil
 
-
-
-
-
-
-
-
-
-
 # VaultKeeper - Advanced Secure Password Manager
 # Install with: pip install -r requirements.txt
 
@@ -91,3 +82,4 @@ pip install pyobjc-core pyobjc-framework-LocalAuthentication pyobjc-framework-Se
 # Use pre-compiled wheels
 
 pip install --only-binary=all cryptography argon2-cffi
+
