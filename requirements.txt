@@ -1,0 +1,117 @@
+﻿# Install core dependencies directly
+pip install cryptography argon2-cffi pyyaml python-dateutil psutil
+
+
+
+
+
+
+
+
+
+
+# VaultKeeper - Advanced Secure Password Manager
+# Install with: pip install -r requirements.txt
+
+
+# Core Encryption & Security
+cryptography>=41.0.0
+argon2-cffi>=23.1.0
+cffi>=1.16.0
+
+
+# Database & Storage (SQLite is built-in)
+python-dateutil>=2.8.2
+
+
+# Configuration Management
+pyyaml>=6.0.1
+
+
+# System Utilities
+psutil>=5.9.6
+
+
+# macOS Touch ID Support (install on macOS only)
+pyobjc-core>=10.0; sys_platform == "darwin"
+pyobjc-framework-LocalAuthentication>=10.0; sys_platform == "darwin"
+pyobjc-framework-Security>=10.0; sys_platform == "darwin"
+
+
+# Optional: Development Tools (uncomment if needed)
+# pytest>=7.4.0
+# flake8>=6.1.0
+# pylint>=3.0.0
+
+
+
+
+
+
+
+
+
+
+
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+
+# Upgrade pip
+pip install --upgrade pip
+
+
+# Install dependencies
+pip install -r requirements.txt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Create virtual environment
+python3 -m venv venv
+
+
+# On Windows:
+# venv\Scripts\activate
+# On Linux:
+source venv/bin/activate
+
+
+# Install core dependencies only
+pip install cryptography>=41.0.0 argon2-cffi>=23.1.0 pyyaml>=6.0.1 python-dateutil>=2.8.2 psutil>=5.9.6
+
+
+
+
+
+
+# Update pip first
+pip install --upgrade pip setuptools wheel
+
+
+# Install dependencies one by one
+pip install cryptography
+pip install argon2-cffi
+pip install pyyaml
+pip install python-dateutil
+pip install psutil
+
+
+# For macOS Touch ID (macOS only)
+pip install pyobjc-core pyobjc-framework-LocalAuthentication pyobjc-framework-Security
+
+
+# Use pre-compiled wheels
+pip install --only-binary=all cryptography argon2-cffi
