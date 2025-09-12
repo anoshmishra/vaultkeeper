@@ -44,16 +44,6 @@ pyobjc-framework-Security>=10.0; sys_platform == "darwin"
 # pylint>=3.0.0
 
 
-
-
-
-
-
-
-
-
-
-
 # Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
@@ -65,18 +55,6 @@ pip install --upgrade pip
 
 # Install dependencies
 pip install -r requirements.txt
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # Create virtual environment
@@ -91,9 +69,6 @@ source venv/bin/activate
 
 # Install core dependencies only
 pip install cryptography>=41.0.0 argon2-cffi>=23.1.0 pyyaml>=6.0.1 python-dateutil>=2.8.2 psutil>=5.9.6
-
-
-
 
 
 
@@ -114,4 +89,5 @@ pip install pyobjc-core pyobjc-framework-LocalAuthentication pyobjc-framework-Se
 
 
 # Use pre-compiled wheels
+
 pip install --only-binary=all cryptography argon2-cffi
