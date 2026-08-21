@@ -1,4 +1,3 @@
-# test_biometric.py (Updated)
 from advanced.biometric_auth import BiometricAuth
 from advanced.encryption_advanced import ZeroKnowledgeEncryption
 import os
@@ -18,20 +17,19 @@ def test_biometric_setup():
         print("⚠️  Touch ID not detected. Biometric features will be disabled.")
         return
     
-    # Test biometric setup with master password and salt
+    # Test biometric setup with a random vault key.  Master passwords are never
+    # stored in Keychain for biometric unlock.
     print("\n🔧 Setting up biometric authentication...")
-    test_master_password = "test_master_password_123"
-    test_salt = b"test_salt_bytes_16ch"
-    
-    # Use the correct method name from your existing BiometricAuth class
-    success = bio_auth.setup_biometric_unlock(test_master_password, test_salt)
+    test_vault_key = encryption.generate_vault_key()
+    success, message = bio_auth.setup_secure_enclave_vault_key(test_vault_key)
     print(f"Setup Result: {'✅ Success' if success else '❌ Failed'}")
     
     if success:
         print("\n🔓 Testing biometric retrieval...")
         print("Note: Touch ID prompt should appear...")
         
-        retrieved_key = bio_auth.retrieve_key_with_touchid()
+        vault_data, message = bio_auth.authenticate_with_touchid()
+        retrieved_key = vault_data and vault_data['vault_key']
         
         if retrieved_key:
             print(f"✅ Biometric authentication successful!")

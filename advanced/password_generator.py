@@ -61,6 +61,18 @@ class AdvancedPasswordGenerator:
         password = ''.join(password_chars)
         
         return password
+
+    def generate_secure_password(self, length=16, **options):
+        """Compatibility name used by the existing UI and tests."""
+        aliases = {
+            'include_symbols': 'use_symbols',
+            'include_numbers': 'use_numbers',
+            'include_uppercase': 'use_uppercase',
+            'include_lowercase': 'use_lowercase',
+            'exclude_ambiguous': 'avoid_ambiguous',
+        }
+        options = {aliases.get(key, key): value for key, value in options.items()}
+        return self.generate_password(length, **options)
     
     def generate_passphrase(self, word_count=4, separator="-", capitalize=True):
         """Generate memorable passphrase"""

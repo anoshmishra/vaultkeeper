@@ -21,16 +21,6 @@ from datetime import datetime
 # Add the current directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-try:
-    from ui.main_window import VaultKeeperMainWindow
-    from config.settings import settings
-except ImportError as e:
-    print(f"❌ Critical Error: Failed to import required modules")
-    print(f"Error: {e}")
-    print(f"Please ensure all VaultKeeper components are properly installed.")
-    sys.exit(1)
-
-
 def setup_logging():
     """Configure logging for VaultKeeper application"""
     
@@ -208,7 +198,7 @@ def main():
     # Initialize and run application
     try:
         print("🚀 Initializing VaultKeeper...")
-        
+        from ui.main_window import VaultKeeperMainWindow
         # Create application instance
         app = VaultKeeperMainWindow()
         

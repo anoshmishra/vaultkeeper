@@ -1,19 +1,18 @@
 # advanced/universal_storage.py
 import json
-import pickle
-import base64
 import os
 import mimetypes
 from datetime import datetime
 from pathlib import Path
-from cryptography.fernet import Fernet
 import sqlite3
+
+from advanced.encryption_advanced import ZeroKnowledgeEncryption
 
 class UniversalDataManager:
     def __init__(self, encryption_key):
         self.encryption_key = encryption_key
-        self.cipher = Fernet(encryption_key)
-        self.db_path = "vaultkeeper_universal.db"
+        self.encryption = ZeroKnowledgeEncryption()
+        self.db_path = str(Path(__file__).resolve().parent.parent / "vaultkeeper_universal.db")
         self.init_universal_db()
     
     def init_universal_db(self):
@@ -56,12 +55,10 @@ class UniversalDataManager:
             data_type = "binary"
             serialized_data = data
         else:
-            # Use pickle for complex objects
-            data_type = "pickle"
-            serialized_data = pickle.dumps(data)
+            raise TypeError("Only text, bytes, lists, and dictionaries can be stored securely")
         
         # Encrypt the data
-        encrypted_data = self.cipher.encrypt(serialized_data)
+        encrypted_data = self.encryption.encrypt_data(serialized_data, self.encryption_key)
         
         # Store in database
         conn = sqlite3.connect(self.db_path)
@@ -112,7 +109,7 @@ class UniversalDataManager:
         
         try:
             # Decrypt the data
-            decrypted_data = self.cipher.decrypt(encrypted_data)
+            decrypted_data = self.encryption.decrypt_data(encrypted_data, self.encryption_key)
             
             # Deserialize based on data type
             if data_type == "json":
@@ -123,8 +120,6 @@ class UniversalDataManager:
                 data = json.loads(decrypted_data.decode())
             elif data_type == "binary":
                 data = decrypted_data
-            elif data_type == "pickle":
-                data = pickle.loads(decrypted_data)
             else:
                 data = decrypted_data
             
@@ -285,10 +280,9 @@ class UniversalDataManager:
                 data_type = "binary"
                 serialized_data = new_data
             else:
-                data_type = "pickle"
-                serialized_data = pickle.dumps(new_data)
+                raise TypeError("Only text, bytes, lists, and dictionaries can be stored securely")
             
-            encrypted_data = self.cipher.encrypt(serialized_data)
+            encrypted_data = self.encryption.encrypt_data(serialized_data, self.encryption_key)
             updates.extend(["encrypted_data = ?", "data_type = ?"])
             params.extend([encrypted_data, data_type])
         
@@ -408,3 +402,12 @@ class UniversalDataManager:
                     filtered_items.append(item)
         
         return filtered_items
+
+    def store_api_key(self, name, secret, tags=None, metadata=None):
+        """Store an API token in the same encrypted vault as files and notes."""
+        return self.store_data(name, secret, category="api_keys", tags=tags, metadata=metadata)
+
+    def store_ssh_key(self, name, private_key, public_key=None, tags=None):
+        """Store an SSH private key without exposing it in SQLite metadata."""
+        payload = {"private_key": private_key, "public_key": public_key}
+        return self.store_data(name, payload, category="ssh_keys", tags=tags, metadata={"key_type": "ssh"})

@@ -3,9 +3,19 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 import os
+import time
+
+from advanced.encryption_advanced import ZeroKnowledgeEncryption
 
 # Database file name
 DB_NAME = "vaultkeeper_advanced.db"
+_audit_encryption_key = None
+
+
+def set_audit_encryption_key(vault_key):
+    """Keep the audit-log key only for the unlocked process session."""
+    global _audit_encryption_key
+    _audit_encryption_key = vault_key
 
 def get_db_path():
     """Get the full path to the database file"""
@@ -30,7 +40,7 @@ def init_advanced_db():
             login_attempts INTEGER DEFAULT 0
         )
     """)
-    
+
     # Enhanced credentials table with TOTP and metadata
     c.execute("""
         CREATE TABLE IF NOT EXISTS credentials (
@@ -78,6 +88,14 @@ def init_advanced_db():
             details TEXT
         )
     """)
+
+    # Additive migrations keep existing user vaults and audit entries readable.
+    user_columns = {row[1] for row in c.execute("PRAGMA table_info(user)")}
+    if "login_locked_until" not in user_columns:
+        c.execute("ALTER TABLE user ADD COLUMN login_locked_until REAL")
+    audit_columns = {row[1] for row in c.execute("PRAGMA table_info(audit_log)")}
+    if "encrypted_entry" not in audit_columns:
+        c.execute("ALTER TABLE audit_log ADD COLUMN encrypted_entry BLOB")
     
     # Password history table for tracking password changes
     c.execute("""
@@ -137,14 +155,61 @@ def update_user_login(success=True):
     
     if success:
         c.execute("""
-            UPDATE user SET 
-            last_login = CURRENT_TIMESTAMP, 
-            login_attempts = 0 
-            WHERE id = 1
+            UPDATE user SET last_login = CURRENT_TIMESTAMP, login_attempts = 0,
+            login_locked_until = NULL WHERE id = 1
         """)
     else:
-        c.execute("UPDATE user SET login_attempts = login_attempts + 1 WHERE id = 1")
+        record_login_failure(conn, c)
     
+    conn.commit()
+    conn.close()
+
+
+def get_login_delay_seconds():
+    """Return the remaining persisted exponential login delay."""
+    conn = sqlite3.connect(get_db_path())
+    row = conn.execute("SELECT login_locked_until FROM user WHERE id = 1").fetchone()
+    conn.close()
+    if not row or row[0] is None:
+        return 0
+    return max(0, int(row[0] - time.time() + 0.999))
+
+
+def record_login_failure(conn=None, cursor=None):
+    """Record a failure and delay the next try (1, 2, 4 ... seconds, max 5 min)."""
+    owns_connection = conn is None
+    if owns_connection:
+        conn = sqlite3.connect(get_db_path())
+        cursor = conn.cursor()
+    cursor.execute("SELECT login_attempts FROM user WHERE id = 1")
+    row = cursor.fetchone()
+    attempts = (row[0] if row else 0) + 1
+    delay = min(300, 2 ** min(attempts - 1, 8))
+    cursor.execute(
+        "UPDATE user SET login_attempts = ?, login_locked_until = ? WHERE id = 1",
+        (attempts, time.time() + delay),
+    )
+    if owns_connection:
+        conn.commit()
+        conn.close()
+    return delay
+
+
+def update_encrypted_vault_key(encrypted_vault_key):
+    """Persist an upgraded Argon2id/AES-GCM vault-key wrapper."""
+    conn = sqlite3.connect(get_db_path())
+    conn.execute("UPDATE user SET vault_key = ? WHERE id = 1", (encrypted_vault_key,))
+    conn.commit()
+    conn.close()
+
+
+def update_master_password_data(master_hash, salt, encrypted_vault_key):
+    """Atomically replace the password verifier and wrapped vault key."""
+    conn = sqlite3.connect(get_db_path())
+    conn.execute(
+        "UPDATE user SET master_password_hash = ?, salt = ?, vault_key = ? WHERE id = 1",
+        (master_hash, salt, encrypted_vault_key),
+    )
     conn.commit()
     conn.close()
 
@@ -157,6 +222,13 @@ def enable_biometric_for_user():
     conn.commit()
     conn.close()
 
+def set_biometric_for_user(enabled):
+    """Synchronize the UI preference with native Keychain setup state."""
+    conn = sqlite3.connect(get_db_path())
+    conn.execute("UPDATE user SET biometric_enabled = ? WHERE id = 1", (bool(enabled),))
+    conn.commit()
+    conn.close()
+
 # Credential Management Functions
 def add_credential_advanced(site, username, encrypted_password, notes=None, 
                           encrypted_totp_secret=None, tags=None, password_strength=0):
@@ -165,14 +237,13 @@ def add_credential_advanced(site, username, encrypted_password, notes=None,
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
-    encrypted_notes = notes.encode() if notes else None
     tags_json = json.dumps(tags) if tags else None
     
     c.execute("""
         INSERT INTO credentials 
         (site, username, password, notes, totp_secret, tags, password_strength) 
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (site, username, encrypted_password, encrypted_notes, 
+    """, (site, username, encrypted_password, notes,
           encrypted_totp_secret, tags_json, password_strength))
     
     credential_id = c.lastrowid
@@ -223,7 +294,7 @@ def update_credential_advanced(credential_id, site=None, username=None,
         params.append(encrypted_password)
     if notes is not None:
         updates.append("notes = ?")
-        params.append(notes.encode() if notes else None)
+        params.append(notes)
     if encrypted_totp_secret is not None:
         updates.append("totp_secret = ?")
         params.append(encrypted_totp_secret)
@@ -395,45 +466,82 @@ def cleanup_expired_shares():
 # Audit Logging Functions
 def log_audit_action(action, resource_type=None, resource_id=None, success=True, 
                     details=None, ip_address=None, user_agent=None):
-    """Log an audit action"""
+    """Log encrypted audit data while the vault is unlocked.
+
+    Locked-state events intentionally are not written in plaintext.  SQLite's
+    timestamp is retained solely for ordering; all meaningful event metadata is
+    sealed with the active vault key.
+    """
+    if _audit_encryption_key is None:
+        return False
+    entry = json.dumps({
+        "action": action, "resource_type": resource_type, "resource_id": resource_id,
+        "success": bool(success), "details": details, "ip_address": ip_address,
+        "user_agent": user_agent,
+    }, separators=(",", ":")).encode()
+    encrypted_entry = ZeroKnowledgeEncryption().encrypt_data(entry, _audit_encryption_key, b"vaultkeeper-audit-v1")
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
     c.execute("""
         INSERT INTO audit_log 
-        (action, resource_type, resource_id, success, details, ip_address, user_agent)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (action, resource_type, resource_id, success, details, ip_address, user_agent))
+        (action, resource_type, resource_id, success, details, ip_address, user_agent, encrypted_entry)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("ENCRYPTED", None, None, True, None, None, None, encrypted_entry))
     
     conn.commit()
     conn.close()
+    return True
 
 def get_audit_logs(limit=100, action_filter=None):
-    """Get recent audit logs"""
+    """Decrypt audit logs for the active vault session."""
+    if _audit_encryption_key is None:
+        return []
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
-    if action_filter:
-        c.execute("""
-            SELECT action, resource_type, resource_id, timestamp, success, details
-            FROM audit_log 
-            WHERE action = ?
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        """, (action_filter, limit))
-    else:
-        c.execute("""
-            SELECT action, resource_type, resource_id, timestamp, success, details
-            FROM audit_log 
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        """, (limit,))
-    
-    logs = c.fetchall()
+    c.execute("SELECT timestamp, encrypted_entry FROM audit_log WHERE encrypted_entry IS NOT NULL ORDER BY timestamp DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
     conn.close()
+    encryption = ZeroKnowledgeEncryption()
+    logs = []
+    for timestamp, encrypted_entry in rows:
+        try:
+            entry = json.loads(encryption.decrypt_data(encrypted_entry, _audit_encryption_key, b"vaultkeeper-audit-v1"))
+        except Exception:
+            continue
+        if not action_filter or entry["action"] == action_filter:
+            logs.append((entry["action"], entry["resource_type"], entry["resource_id"], timestamp, entry["success"], entry["details"]))
     return logs
+
+
+def encrypt_legacy_audit_logs():
+    """Seal pre-upgrade audit entries once their vault is unlocked."""
+    if _audit_encryption_key is None:
+        return 0
+    conn = sqlite3.connect(get_db_path())
+    rows = conn.execute("""
+        SELECT id, action, resource_type, resource_id, success, details, ip_address, user_agent
+        FROM audit_log WHERE encrypted_entry IS NULL
+    """).fetchall()
+    encryption = ZeroKnowledgeEncryption()
+    for row in rows:
+        entry = json.dumps({
+            "action": row[1], "resource_type": row[2], "resource_id": row[3],
+            "success": bool(row[4]), "details": row[5], "ip_address": row[6],
+            "user_agent": row[7],
+        }, separators=(",", ":")).encode()
+        encrypted = encryption.encrypt_data(entry, _audit_encryption_key, b"vaultkeeper-audit-v1")
+        conn.execute("""
+            UPDATE audit_log SET action = 'ENCRYPTED', resource_type = NULL,
+            resource_id = NULL, success = TRUE, details = NULL, ip_address = NULL,
+            user_agent = NULL, encrypted_entry = ? WHERE id = ?
+        """, (encrypted, row[0]))
+    conn.commit()
+    conn.close()
+    return len(rows)
 
 # Password History Functions
 def save_password_history(credential_id, old_encrypted_password):

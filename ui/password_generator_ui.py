@@ -6,6 +6,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from advanced.password_generator import AdvancedPasswordGenerator
+from config.settings import settings
 
 class PasswordGeneratorWindow:
     """Advanced password generator interface"""
@@ -14,6 +15,8 @@ class PasswordGeneratorWindow:
         self.parent = parent
         self.vault_key = vault_key
         self.generator = AdvancedPasswordGenerator()
+        self._clipboard_secret = None
+        self._clipboard_after_id = None
         
         self.window = tk.Toplevel(parent)
         self.window.title("Advanced Password Generator")
@@ -298,9 +301,22 @@ class PasswordGeneratorWindow:
         if password:
             self.window.clipboard_clear()
             self.window.clipboard_append(password)
-            messagebox.showinfo("Copied", "Password copied to clipboard!")
+            self._clipboard_secret = password
+            if self._clipboard_after_id:
+                self.window.after_cancel(self._clipboard_after_id)
+            timeout = max(1, int(settings.get('security', 'clipboard_clear_timeout', 30)))
+            self._clipboard_after_id = self.window.after(timeout * 1000, self._clear_clipboard)
+            messagebox.showinfo("Copied", f"Password copied to clipboard for {timeout} seconds.")
         else:
             messagebox.showwarning("Warning", "No password to copy")
+
+    def _clear_clipboard(self):
+        try:
+            if self.window.clipboard_get() == self._clipboard_secret:
+                self.window.clipboard_clear()
+        except tk.TclError:
+            pass
+        self._clipboard_secret = None
     
     def preset_high_security(self):
         """Apply high security preset"""

@@ -1,31 +1,42 @@
 # totp_manager.py
-import pyotp
-import qrcode
 import io
 import base64
-from cryptography.fernet import Fernet
 import time
-import json
+
+from advanced.encryption_advanced import ZeroKnowledgeEncryption
 
 class TOTPManager:
     def __init__(self, encryption_key):
         self.encryption_key = encryption_key
-        self.cipher = Fernet(encryption_key)
+        self.encryption = ZeroKnowledgeEncryption()
+
+    @staticmethod
+    def _pyotp():
+        try:
+            import pyotp
+            return pyotp
+        except ImportError as exc:
+            raise RuntimeError("TOTP support requires the pyotp package") from exc
     
     def generate_secret(self):
         """Generate a new TOTP secret"""
-        return pyotp.random_base32()
+        return self._pyotp().random_base32()
     
     def encrypt_secret(self, secret):
         """Encrypt TOTP secret for storage"""
-        return self.cipher.encrypt(secret.encode())
+        return self.encryption.encrypt_data(secret, self.encryption_key)
     
     def decrypt_secret(self, encrypted_secret):
         """Decrypt TOTP secret"""
-        return self.cipher.decrypt(encrypted_secret).decode()
+        return self.encryption.decrypt_data(encrypted_secret, self.encryption_key).decode()
     
     def generate_qr_code(self, secret, account_name, issuer_name):
         """Generate QR code for TOTP setup"""
+        pyotp = self._pyotp()
+        try:
+            import qrcode
+        except ImportError as exc:
+            raise RuntimeError("QR-code generation requires the qrcode package") from exc
         totp_uri = pyotp.totp.TOTP(secret).provisioning_uri(
             name=account_name,
             issuer_name=issuer_name
@@ -46,12 +57,12 @@ class TOTPManager:
     
     def get_current_code(self, secret):
         """Get current TOTP code"""
-        totp = pyotp.TOTP(secret)
+        totp = self._pyotp().TOTP(secret)
         return totp.now()
     
     def verify_code(self, secret, code):
         """Verify TOTP code"""
-        totp = pyotp.TOTP(secret)
+        totp = self._pyotp().TOTP(secret)
         return totp.verify(code, valid_window=1)
     
     def get_time_remaining(self):

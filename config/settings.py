@@ -13,6 +13,8 @@ class VaultKeeperSettings:
             'security': {
                 'auto_lock_timeout': 900,  # 15 minutes in seconds
                 'clipboard_clear_timeout': 30,  # 30 seconds
+                'clipboard_clear_enabled': True,
+                'auto_lock_enabled': True,
                 'password_strength_requirement': 4,  # 1-5 scale
                 'enable_audit_logging': True,
                 'session_timeout': 3600  # 1 hour

@@ -1,4 +1,3 @@
-# tests/test_password_gen.py
 import unittest
 import sys
 import os

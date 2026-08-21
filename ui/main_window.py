@@ -3,8 +3,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 import sys
 import os
-import base64
+import json
 from datetime import datetime
+from pathlib import Path
 
 # Add the parent directory to the path so we can import from advanced/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,31 +14,40 @@ from advanced.encryption_advanced import ZeroKnowledgeEncryption
 from advanced.biometric_auth import BiometricAuth
 from advanced.database_advanced import (
     init_advanced_db, get_user_advanced, save_user_advanced, 
-    enable_biometric_for_user, add_credential_advanced, 
+    enable_biometric_for_user, set_biometric_for_user, add_credential_advanced,
     get_credentials_advanced, update_credential_advanced,
     delete_credential_advanced, mark_credential_used,
     toggle_credential_favorite, log_audit_action,
-    get_database_stats, vacuum_database
+    get_database_stats, vacuum_database, set_audit_encryption_key,
+    get_login_delay_seconds, record_login_failure, update_user_login,
+    update_encrypted_vault_key, update_master_password_data, encrypt_legacy_audit_logs
 )
 from advanced.password_generator import AdvancedPasswordGenerator
 from advanced.universal_storage import UniversalDataManager
+from advanced.backup_manager import EncryptedBackupManager
+from advanced.password_security import PasswordSecurityAnalyzer, check_hibp_breach
+from advanced.session_security import AutoLockMonitor
+from advanced.totp_manager import TOTPManager
+from config.settings import settings
+from ui.password_generator_ui import PasswordGeneratorWindow
 
 class VaultKeeperMainWindow:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("VaultKeeper - Advanced Secure Password Manager")
-        self.root.geometry("1000x700")
-        self.root.configure(bg='#2c3e50')
-        self.root.minsize(800, 600)
+        self.root.geometry("1120x760")
+        self.root.configure(bg='#0b1220')
+        self.root.minsize(900, 640)
         
         # Initialize components
         self.encryption = ZeroKnowledgeEncryption()
         self.biometric = BiometricAuth()
         self.password_gen = AdvancedPasswordGenerator()
         self.universal_storage = None  # Will be initialized after authentication
-        
-        # Initialize database
-        init_advanced_db()
+        self.backup_manager = None
+        self.auto_lock_monitor = None
+        self._clipboard_secret = None
+        self._clipboard_after_id = None
         
         # Session variables
         self.session_key = None
@@ -48,75 +58,83 @@ class VaultKeeperMainWindow:
         
         # UI Style configuration
         self.colors = {
-            'primary': '#2c3e50',
-            'secondary': '#34495e',
-            'accent': '#3498db',
-            'success': '#27ae60',
-            'warning': '#f39c12',
-            'danger': '#e74c3c',
-            'text_light': '#ecf0f1',
-            'text_muted': '#bdc3c7'
+            'primary': '#0b1220',
+            'secondary': '#111827',
+            'surface': '#172033',
+            'surface_hover': '#202c43',
+            'border': '#29364f',
+            'accent': '#5b8cff',
+            'success': '#22c55e',
+            'warning': '#f59e0b',
+            'danger': '#ef4444',
+            'text_light': '#f8fafc',
+            'text_muted': '#94a3b8'
         }
         
         self.setup_ui()
-        self.check_initial_setup()
+        self.update_status("Preparing secure vault...")
+        # Let macOS map the window before any database or optional framework
+        # work.  This prevents a slow startup path from looking like a hang.
+        self.root.after(50, self._initialize_vault)
+
+    def _initialize_vault(self):
+        try:
+            init_advanced_db()
+            self.check_initial_setup()
+        except Exception as exc:
+            self.update_status("Vault startup failed")
+            messagebox.showerror("VaultKeeper", f"Unable to open the vault database:\n{exc}")
     
     def setup_ui(self):
-        """Setup the main UI components with enhanced styling"""
-        # Configure styles
+        """Create a compact, responsive application shell."""
         style = ttk.Style()
         style.theme_use('clam')
-        
-        # Title frame
+        style.configure('TNotebook', background=self.colors['secondary'], borderwidth=0)
+        style.configure('TNotebook.Tab', background=self.colors['surface'], foreground=self.colors['text_muted'], padding=(14, 8), borderwidth=0)
+        style.map('TNotebook.Tab', background=[('selected', self.colors['accent'])], foreground=[('selected', 'white')])
+
         title_frame = tk.Frame(self.root, bg=self.colors['primary'])
-        title_frame.pack(fill='x', pady=(0, 10))
-        
-        title_label = tk.Label(
-            title_frame, 
-            text="🔐 VaultKeeper", 
-            font=('Arial', 28, 'bold'),
+        title_frame.pack(fill='x')
+        brand = tk.Frame(title_frame, bg=self.colors['primary'])
+        brand.pack(side='left', padx=28, pady=16)
+        tk.Label(
+            brand,
+            text="VaultKeeper",
+            font=('Arial', 20, 'bold'),
             fg=self.colors['text_light'],
             bg=self.colors['primary']
-        )
-        title_label.pack(pady=15)
-        
-        subtitle_label = tk.Label(
-            title_frame,
-            text="Advanced Secure Password Manager with Universal Storage",
-            font=('Arial', 12),
+        ).pack(anchor='w')
+        tk.Label(
+            brand, text="Private, encrypted vault", font=('Arial', 10),
             fg=self.colors['text_muted'],
             bg=self.colors['primary']
+        ).pack(anchor='w', pady=(2, 0))
+        self.session_badge = tk.Label(
+            title_frame, text="LOCKED", font=('Arial', 9, 'bold'),
+            fg='#bfdbfe', bg='#1e3a5f', padx=10, pady=5
         )
-        subtitle_label.pack()
-        
-        # Main content frame with scrollable area
+        self.session_badge.pack(side='right', padx=28)
+
         main_frame = tk.Frame(self.root, bg=self.colors['secondary'])
-        main_frame.pack(expand=True, fill='both', padx=15, pady=15)
-        
-        # Create scrollable content area
+        main_frame.pack(expand=True, fill='both', padx=24, pady=20)
         canvas = tk.Canvas(main_frame, bg=self.colors['secondary'], highlightthickness=0)
         scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
         self.content_frame = tk.Frame(canvas, bg=self.colors['secondary'])
-        
         self.content_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-        
-        canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+        self._content_window = canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(self._content_window, width=event.width))
         canvas.configure(yscrollcommand=scrollbar.set)
-        
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        
-        # Status bar
         self.status_bar = tk.Label(
             self.root,
             text="Ready",
-            relief=tk.SUNKEN,
             anchor=tk.W,
-            bg=self.colors['primary'],
-            fg=self.colors['text_light']
+            bg=self.colors['primary'], fg=self.colors['text_muted'], padx=28, pady=8,
+            font=('Arial', 9)
         )
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
@@ -148,7 +166,7 @@ class VaultKeeperMainWindow:
         
         tk.Label(
             welcome_frame,
-            text="🎉 Welcome to VaultKeeper!",
+            text="Create your private vault",
             font=('Arial', 24, 'bold'),
             fg=self.colors['text_light'],
             bg=self.colors['secondary']
@@ -156,7 +174,7 @@ class VaultKeeperMainWindow:
         
         tk.Label(
             welcome_frame,
-            text="Create your master password to secure your vault with zero-knowledge encryption",
+            text="Your master password unlocks an encrypted vault stored only on this device.",
             font=('Arial', 12),
             fg=self.colors['text_muted'],
             bg=self.colors['secondary'],
@@ -222,27 +240,27 @@ class VaultKeeperMainWindow:
         options_frame = tk.Frame(form_frame, bg=self.colors['secondary'])
         options_frame.pack(pady=20)
         
-        # Biometric option
-        if self.biometric.is_touchid_available():
-            self.enable_biometric = tk.BooleanVar(value=True)
-            biometric_check = tk.Checkbutton(
-                options_frame,
-                text="🔓 Enable Touch ID for quick access",
-                variable=self.enable_biometric,
-                font=('Arial', 11),
-                fg=self.colors['text_light'],
-                bg=self.colors['secondary'],
-                selectcolor=self.colors['accent'],
-                activebackground=self.colors['secondary'],
-                activeforeground=self.colors['text_light']
-            )
-            biometric_check.pack(anchor='w', pady=5)
+        # Touch ID is verified only if the user enables it.  Loading the native
+        # macOS bridge during startup can otherwise delay the first window.
+        self.enable_biometric = tk.BooleanVar(value=False)
+        biometric_check = tk.Checkbutton(
+            options_frame,
+            text="Enable Touch ID for quick access (if available)",
+            variable=self.enable_biometric,
+            font=('Arial', 11),
+            fg=self.colors['text_light'],
+            bg=self.colors['secondary'],
+            selectcolor=self.colors['accent'],
+            activebackground=self.colors['secondary'],
+            activeforeground=self.colors['text_light']
+        )
+        biometric_check.pack(anchor='w', pady=5)
         
         # Auto-lock option
         self.enable_autolock = tk.BooleanVar(value=True)
         autolock_check = tk.Checkbutton(
             options_frame,
-            text="🔒 Enable auto-lock after 15 minutes of inactivity",
+            text="Lock automatically after 15 minutes of inactivity",
             variable=self.enable_autolock,
             font=('Arial', 11),
             fg=self.colors['text_light'],
@@ -259,9 +277,9 @@ class VaultKeeperMainWindow:
         
         create_btn = tk.Button(
             button_frame,
-            text="🚀 Create Secure Vault",
+            text="Create vault",
             command=self.create_vault,
-            bg=self.colors['success'],
+            bg=self.colors['accent'],
             fg='white',
             font=('Arial', 14, 'bold'),
             padx=30,
@@ -274,8 +292,7 @@ class VaultKeeperMainWindow:
         # Security info
         security_info = tk.Label(
             setup_frame,
-            text="🛡️ Your data will be encrypted with AES-256 and zero-knowledge architecture\n"
-                 "Only you have access to your decryption keys",
+            text="AES-256-GCM encryption • Argon2id password protection • local-only vault",
             font=('Arial', 10),
             fg=self.colors['text_muted'],
             bg=self.colors['secondary'],
@@ -322,7 +339,7 @@ class VaultKeeperMainWindow:
         
         tk.Label(
             header_frame,
-            text="🔐 Unlock Your Secure Vault",
+            text="Unlock your vault",
             font=('Arial', 20, 'bold'),
             fg=self.colors['text_light'],
             bg=self.colors['secondary']
@@ -330,7 +347,7 @@ class VaultKeeperMainWindow:
         
         tk.Label(
             header_frame,
-            text="Choose your authentication method",
+            text="Use your master password or Touch ID.",
             font=('Arial', 12),
             fg=self.colors['text_muted'],
             bg=self.colors['secondary']
@@ -344,13 +361,13 @@ class VaultKeeperMainWindow:
         user_data = get_user_advanced()
         has_biometric = user_data and len(user_data) > 3 and user_data[3]  # biometric_enabled field
         
-        if self.biometric.is_touchid_available() and has_biometric:
+        if has_biometric:
             biometric_frame = tk.Frame(auth_frame, bg=self.colors['accent'], relief=tk.RAISED, bd=2)
             biometric_frame.pack(pady=10, padx=20, fill='x')
             
             tk.Label(
                 biometric_frame,
-                text="🔓 Quick Access",
+                text="Quick unlock",
                 font=('Arial', 14, 'bold'),
                 fg='white',
                 bg=self.colors['accent']
@@ -358,7 +375,7 @@ class VaultKeeperMainWindow:
             
             biometric_btn = tk.Button(
                 biometric_frame,
-                text="Unlock with Touch ID",
+                text="Use Touch ID",
                 command=self.biometric_login,
                 bg='white',
                 fg=self.colors['accent'],
@@ -405,7 +422,7 @@ class VaultKeeperMainWindow:
         # Login button
         login_btn = tk.Button(
             password_frame,
-            text="🔓 Unlock Vault",
+            text="Unlock vault",
             command=self.password_login,
             bg=self.colors['success'],
             fg='white',
@@ -458,13 +475,13 @@ class VaultKeeperMainWindow:
             master_hash = self.encryption.ph.hash(master_pass)
             
             # Save to database
-            biometric_enabled = hasattr(self, 'enable_biometric') and self.enable_biometric.get()
-            save_user_advanced(master_hash, salt, encrypted_vault_key, biometric_enabled)
+            biometric_requested = hasattr(self, 'enable_biometric') and self.enable_biometric.get()
+            save_user_advanced(master_hash, salt, encrypted_vault_key, False)
             
             # Setup biometric if enabled
-            if biometric_enabled:
+            if biometric_requested:
                 self.update_status("Setting up Touch ID...")
-                self.root.after(1000, lambda: self._setup_biometric_delayed(master_pass, salt))
+                self.root.after(1000, self._setup_biometric_delayed)
             else:
                 messagebox.showinfo("Success", "🎉 Secure vault created successfully!")
             
@@ -475,6 +492,7 @@ class VaultKeeperMainWindow:
             
             # Initialize universal storage
             self.universal_storage = UniversalDataManager(vault_key)
+            self._activate_unlocked_session()
             
             # Log the action
             log_audit_action("VAULT_CREATED", success=True, details="New vault created")
@@ -485,10 +503,10 @@ class VaultKeeperMainWindow:
             messagebox.showerror("Error", f"Failed to create vault:\n{str(e)}")
             self.update_status("Vault creation failed")
     
-    def _setup_biometric_delayed(self, master_pass, salt):
+    def _setup_biometric_delayed(self):
         """Setup biometric authentication with proper error handling"""
         try:
-            success, message = self.biometric.setup_touchid_keychain(master_pass, salt)
+            success, message = self.biometric.setup_secure_enclave_vault_key(self.vault_key)
             
             if success:
                 enable_biometric_for_user()
@@ -496,6 +514,7 @@ class VaultKeeperMainWindow:
                                   "🎉 Vault created with Touch ID enabled!\n\n"
                                   "You can now use Touch ID to unlock your vault.")
             else:
+                set_biometric_for_user(False)
                 messagebox.showwarning("Partial Setup", 
                                      f"Vault created successfully, but Touch ID setup encountered an issue:\n\n"
                                      f"{message}\n\n"
@@ -504,7 +523,54 @@ class VaultKeeperMainWindow:
             messagebox.showwarning("Setup Warning", 
                                  f"Vault created successfully, but Touch ID setup failed:\n\n"
                                  f"{str(e)}\n\n"
-                                 "You can try enabling Touch ID later in Settings.")
+                                     "You can try enabling Touch ID later in Settings.")
+
+    def _activate_unlocked_session(self):
+        """Enable session-only services after the vault key is available."""
+        self.session_badge.config(text="UNLOCKED", fg='#bbf7d0', bg='#14532d')
+        set_audit_encryption_key(self.vault_key)
+        encrypt_legacy_audit_logs()
+        timeout = settings.get('security', 'auto_lock_timeout', 900)
+        if settings.get('security', 'auto_lock_enabled', True):
+            self.auto_lock_monitor = AutoLockMonitor(self.root, self.lock_vault, timeout)
+            self.auto_lock_monitor.start()
+        self.backup_manager = EncryptedBackupManager(
+            self.vault_key,
+            [Path(__file__).resolve().parent.parent / 'vaultkeeper_advanced.db',
+             Path(__file__).resolve().parent.parent / 'vaultkeeper_universal.db'],
+        )
+        self._migrate_legacy_plaintext_notes()
+        self.root.after(1000, self._maybe_auto_backup)
+
+    def _maybe_auto_backup(self):
+        if not self.backup_manager or not settings.get('backup', 'auto_backup_enabled', True):
+            return
+        destination = Path(settings.get('backup', 'backup_location'))
+        frequency = max(1, int(settings.get('backup', 'backup_frequency_days', 7))) * 86400
+        backups = list(destination.glob('vaultkeeper-*.vkbak')) if destination.exists() else []
+        if backups and datetime.now().timestamp() - max(item.stat().st_mtime for item in backups) < frequency:
+            return
+        try:
+            output = self.backup_manager.create_backup(destination)
+            log_audit_action('BACKUP_CREATED', 'backup', success=True, details=output.name)
+        except Exception:
+            # A failed background backup must not interrupt vault access.
+            log_audit_action('BACKUP_FAILED', 'backup', success=False)
+
+    def _migrate_legacy_plaintext_notes(self):
+        """Seal notes written by older releases that stored UTF-8 bytes directly."""
+        for credential in get_credentials_advanced():
+            encrypted_notes = credential[4]
+            if not encrypted_notes or bytes(encrypted_notes).startswith((b'VK1', b'gAAAAA')):
+                continue
+            try:
+                plaintext = bytes(encrypted_notes).decode('utf-8')
+                update_credential_advanced(
+                    credential[0], notes=self.encryption.encrypt_data(plaintext, self.vault_key)
+                )
+            except UnicodeDecodeError:
+                # Leave non-text legacy values untouched rather than risking loss.
+                continue
     
     def biometric_login(self):
         """Enhanced biometric login with better error handling"""
@@ -540,22 +606,18 @@ class VaultKeeperMainWindow:
             vault_data, message = self.biometric.authenticate_with_touchid()
             
             if vault_data:
-                # Process successful authentication
-                master_password = vault_data['master_password']
-                salt = base64.b64decode(vault_data['salt'])
-                
-                # Continue with login process...
-                master_key = self.encryption.derive_master_key(master_password, salt)
+                # The Keychain returns only a biometrically protected vault key;
+                # the master password is never persisted for Touch ID unlock.
+                vault_key = vault_data['vault_key']
                 user_data = get_user_advanced()
                 
                 if user_data:
-                    _, _, encrypted_vault_key, _ = user_data
-                    vault_key = self.encryption.decrypt_vault_key(encrypted_vault_key, master_key)
-                    
-                    self.session_key = master_key
+                    self.session_key = None
                     self.vault_key = vault_key
                     self.is_authenticated = True
                     self.universal_storage = UniversalDataManager(vault_key)
+                    self._activate_unlocked_session()
+                    update_user_login(True)
                     
                     log_audit_action("BIOMETRIC_LOGIN", success=True, 
                                    details="Touch ID authentication successful")
@@ -596,6 +658,11 @@ class VaultKeeperMainWindow:
         if not master_pass:
             messagebox.showwarning("Missing Password", "Please enter your master password")
             return
+
+        delay = get_login_delay_seconds()
+        if delay:
+            messagebox.showwarning("Try Again Later", f"Too many failed attempts. Try again in {delay} seconds.")
+            return
         
         try:
             self.update_status("Verifying master password...")
@@ -611,15 +678,23 @@ class VaultKeeperMainWindow:
             # Verify master password
             try:
                 self.encryption.ph.verify(master_hash, master_pass)
-            except:
-                log_audit_action("PASSWORD_LOGIN", success=False, details="Invalid master password")
-                messagebox.showerror("Authentication Failed", "Invalid master password!")
+            except Exception:
+                delay = record_login_failure()
+                self.login_pass_entry.delete(0, tk.END)
+                messagebox.showerror("Authentication Failed", f"Invalid master password. Retry available in {delay} seconds.")
                 self.update_status("Authentication failed")
                 return
             
             # Derive keys
             master_key = self.encryption.derive_master_key(master_pass, salt)
-            vault_key = self.encryption.decrypt_vault_key(encrypted_vault_key, master_key)
+            try:
+                vault_key = self.encryption.decrypt_vault_key(encrypted_vault_key, master_key)
+            except Exception:
+                # Existing PBKDF2/Fernet wrappers are upgraded after a successful
+                # password login without touching encrypted vault contents.
+                legacy_key = self.encryption.derive_legacy_master_key(master_pass, salt)
+                vault_key = self.encryption.decrypt_vault_key(encrypted_vault_key, legacy_key)
+                update_encrypted_vault_key(self.encryption.encrypt_vault_key(vault_key, master_key))
             
             # Set session
             self.session_key = master_key
@@ -628,6 +703,9 @@ class VaultKeeperMainWindow:
             
             # Initialize universal storage
             self.universal_storage = UniversalDataManager(vault_key)
+            self._activate_unlocked_session()
+            update_user_login(True)
+            self.login_pass_entry.delete(0, tk.END)
             
             # Log successful login
             log_audit_action("PASSWORD_LOGIN", success=True, details="Master password authentication successful")
@@ -646,75 +724,47 @@ class VaultKeeperMainWindow:
         self.clear_content()
         self.update_status("Vault unlocked - Secure session active")
         
-        # Main vault container
         vault_container = tk.Frame(self.content_frame, bg=self.colors['secondary'])
-        vault_container.pack(expand=True, fill='both', padx=10, pady=10)
-        
-        # Header with action buttons
-        header_frame = tk.Frame(vault_container, bg=self.colors['primary'], relief=tk.RAISED, bd=1)
-        header_frame.pack(fill='x', pady=(0, 15))
-        
-        # Left side - title
-        left_header = tk.Frame(header_frame, bg=self.colors['primary'])
-        left_header.pack(side='left', padx=15, pady=10)
-        
-        tk.Label(
-            left_header,
-            text="🔓 Your Secure Vault",
-            font=('Arial', 18, 'bold'),
-            fg=self.colors['text_light'],
-            bg=self.colors['primary']
-        ).pack(side='left')
-        
-        # Right side - action buttons
-        right_header = tk.Frame(header_frame, bg=self.colors['primary'])
-        right_header.pack(side='right', padx=15, pady=10)
-        
-        # Action buttons
+        vault_container.pack(expand=True, fill='both', padx=2, pady=2)
+        header_frame = tk.Frame(vault_container, bg=self.colors['surface'], highlightbackground=self.colors['border'], highlightthickness=1)
+        header_frame.pack(fill='x', pady=(0, 16))
+        tk.Label(header_frame, text="Credentials", font=('Arial', 20, 'bold'), fg=self.colors['text_light'], bg=self.colors['surface']).pack(anchor='w', padx=20, pady=(18, 2))
+        tk.Label(header_frame, text="Passwords, two-factor codes, and secure notes", font=('Arial', 10), fg=self.colors['text_muted'], bg=self.colors['surface']).pack(anchor='w', padx=20, pady=(0, 16))
+
+        toolbar = tk.Frame(header_frame, bg=self.colors['surface'])
+        toolbar.pack(fill='x', padx=16, pady=(0, 16))
         buttons = [
-            ("➕ Add Password", self.show_add_credential_screen, self.colors['success']),
-            ("🎲 Generate Password", self.show_password_generator, self.colors['warning']),
-            ("📁 Universal Storage", self.show_universal_storage, self.colors['accent']),
-            ("⚙️ Settings", self.show_settings, '#95a5a6'),
-            ("🔒 Lock Vault", self.lock_vault, self.colors['danger'])
+            ("Add credential", self.show_add_credential_screen, self.colors['accent']),
+            ("Generate", self.show_password_generator, self.colors['surface_hover']),
+            ("Password health", self.show_password_health, self.colors['surface_hover']),
+            ("Files & keys", self.show_universal_storage, self.colors['surface_hover']),
+            ("Settings", self.show_settings, self.colors['surface_hover']),
+            ("Lock", self.lock_vault, self.colors['danger']),
         ]
-        
         for text, command, color in buttons:
-            btn = tk.Button(
-                right_header,
-                text=text,
-                command=command,
-                bg=color,
-                fg='white',
-                font=('Arial', 10, 'bold'),
-                padx=10,
-                pady=5,
-                relief=tk.FLAT,
-                cursor='hand2'
-            )
-            btn.pack(side='left', padx=2)
-        
-        # Search and filter frame
+            tk.Button(toolbar, text=text, command=command, bg=color, fg='white',
+                      activebackground=color, activeforeground='white', font=('Arial', 10, 'bold'),
+                      padx=12, pady=7, relief=tk.FLAT, cursor='hand2').pack(side='left', padx=3)
+
         search_frame = tk.Frame(vault_container, bg=self.colors['secondary'])
-        search_frame.pack(fill='x', pady=(0, 10))
-        
+        search_frame.pack(fill='x', pady=(0, 12))
         tk.Label(
             search_frame,
-            text="🔍 Search:",
-            font=('Arial', 11),
+            text="Search",
+            font=('Arial', 10, 'bold'),
             fg=self.colors['text_light'],
             bg=self.colors['secondary']
-        ).pack(side='left', padx=(0, 10))
-        
+        ).pack(side='left', padx=(2, 10))
         self.search_var = tk.StringVar()
         search_entry = tk.Entry(
             search_frame,
             textvariable=self.search_var,
-            font=('Arial', 11),
-            width=30
+            font=('Arial', 11), relief=tk.FLAT, bg='#ffffff', fg='#0f172a',
+            insertbackground='#0f172a'
         )
-        search_entry.pack(side='left', padx=(0, 10))
+        search_entry.pack(side='left', fill='x', expand=True, ipady=8)
         search_entry.bind('<KeyRelease>', self.filter_credentials)
+        search_entry.focus_set()
         
         # Credentials display frame
         self.credentials_frame = tk.Frame(vault_container, bg=self.colors['secondary'])
@@ -738,26 +788,21 @@ class VaultKeeperMainWindow:
             widget.destroy()
         
         if not self.current_credentials:
-            # Empty state
-            empty_frame = tk.Frame(self.credentials_frame, bg=self.colors['secondary'])
-            empty_frame.pack(expand=True)
-            
+            empty_frame = tk.Frame(self.credentials_frame, bg=self.colors['surface'], highlightbackground=self.colors['border'], highlightthickness=1)
+            empty_frame.pack(expand=True, fill='x', pady=36)
             tk.Label(
                 empty_frame,
-                text="🔐 Your vault is empty",
-                font=('Arial', 16, 'bold'),
-                fg=self.colors['text_muted'],
-                bg=self.colors['secondary']
-            ).pack(pady=50)
-            
+                text="Your vault is ready",
+                font=('Arial', 18, 'bold'), fg=self.colors['text_light'], bg=self.colors['surface']
+            ).pack(pady=(42, 8))
             tk.Label(
                 empty_frame,
-                text="Add your first password to get started!",
-                font=('Arial', 12),
-                fg=self.colors['text_muted'],
-                bg=self.colors['secondary']
+                text="Add your first credential to start keeping everything in one place.",
+                font=('Arial', 10), fg=self.colors['text_muted'], bg=self.colors['surface']
             ).pack()
-            
+            tk.Button(empty_frame, text="Add credential", command=self.show_add_credential_screen,
+                      bg=self.colors['accent'], fg='white', activebackground=self.colors['accent'],
+                      font=('Arial', 10, 'bold'), padx=16, pady=8, relief=tk.FLAT, cursor='hand2').pack(pady=(18, 42))
             return
         
         # Create scrollable credentials list
@@ -770,7 +815,8 @@ class VaultKeeperMainWindow:
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        item_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(item_window, width=event.width))
         canvas.configure(yscrollcommand=scrollbar.set)
         
         # Filter credentials
@@ -790,90 +836,72 @@ class VaultKeeperMainWindow:
         """Create a card for displaying credential information"""
         cred_id, site, username, encrypted_password, encrypted_notes, encrypted_totp, tags, favorite, created_at, updated_at, last_used, password_strength = credential
         
-        # Card frame
-        card_color = '#3d566e' if index % 2 == 0 else '#425a75'
-        card_frame = tk.Frame(parent, bg=card_color, relief=tk.RAISED, bd=1)
-        card_frame.pack(fill='x', padx=5, pady=3)
-        
-        # Main content frame
+        card_color = self.colors['surface'] if index % 2 == 0 else '#141e30'
+        card_frame = tk.Frame(parent, bg=card_color, highlightbackground=self.colors['border'], highlightthickness=1)
+        card_frame.pack(fill='x', padx=2, pady=4)
         content_frame = tk.Frame(card_frame, bg=card_color)
-        content_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Left side - info
+        content_frame.pack(fill='x', padx=18, pady=14)
         left_frame = tk.Frame(content_frame, bg=card_color)
         left_frame.pack(side='left', fill='x', expand=True)
-        
-        # Site name with favorite indicator
         site_frame = tk.Frame(left_frame, bg=card_color)
         site_frame.pack(anchor='w')
-        
         if favorite:
             tk.Label(
                 site_frame,
-                text="⭐",
-                font=('Arial', 12),
-                fg='#f1c40f',
+                text="FAVORITE",
+                font=('Arial', 8, 'bold'),
+                fg='#fcd34d',
                 bg=card_color
-            ).pack(side='left')
-        
+            ).pack(side='left', padx=(0, 8))
         tk.Label(
             site_frame,
             text=site,
             font=('Arial', 14, 'bold'),
             fg=self.colors['text_light'],
             bg=card_color
-        ).pack(side='left', padx=(5 if favorite else 0, 0))
-        
-        # Username
+        ).pack(side='left')
         if username:
             tk.Label(
                 left_frame,
-                text=f"👤 {username}",
-                font=('Arial', 11),
+                text=username,
+                font=('Arial', 10),
                 fg=self.colors['text_muted'],
                 bg=card_color
-            ).pack(anchor='w', pady=(5, 0))
-        
-        # Password strength indicator
+            ).pack(anchor='w', pady=(4, 0))
         if password_strength > 0:
-            strength_colors = ['#e74c3c', '#e67e22', '#f39c12', '#2ecc71', '#27ae60']
+            strength_colors = ['#fb7185', '#fb923c', '#fbbf24', '#4ade80', '#22c55e']
             strength_texts = ['Very Weak', 'Weak', 'Fair', 'Good', 'Strong']
             strength_idx = min(password_strength - 1, 4)
-            
             tk.Label(
                 left_frame,
-                text=f"🔒 {strength_texts[strength_idx]}",
-                font=('Arial', 10),
+                text=strength_texts[strength_idx].upper(),
+                font=('Arial', 8, 'bold'),
                 fg=strength_colors[strength_idx],
                 bg=card_color
-            ).pack(anchor='w', pady=(2, 0))
-        
-        # Right side - actions
+            ).pack(anchor='w', pady=(7, 0))
         right_frame = tk.Frame(content_frame, bg=card_color)
         right_frame.pack(side='right')
-        
-        # Action buttons
         actions = [
-            ("👁️", lambda: self.view_credential(cred_id), "View"),
-            ("📋", lambda: self.copy_password(cred_id, encrypted_password), "Copy Password"),
-            ("✏️", lambda: self.edit_credential(cred_id), "Edit"),
-            ("🗑️", lambda: self.delete_credential(cred_id, site), "Delete")
+            ("Copy", lambda: self.copy_password(cred_id, encrypted_password), self.colors['accent']),
+            ("View", lambda: self.view_credential(cred_id), self.colors['surface_hover']),
+            ("Edit", lambda: self.edit_credential(cred_id), self.colors['surface_hover']),
+            ("Delete", lambda: self.delete_credential(cred_id, site), self.colors['danger']),
         ]
-        
-        for icon, command, tooltip in actions:
+        for text, command, color in actions:
             btn = tk.Button(
                 right_frame,
-                text=icon,
+                text=text,
                 command=command,
-                bg='#5a6c7d',
+                bg=color,
                 fg='white',
-                font=('Arial', 10),
-                padx=8,
-                pady=4,
+                activebackground=color,
+                activeforeground='white',
+                font=('Arial', 9, 'bold'),
+                padx=10, pady=6,
                 relief=tk.FLAT,
                 cursor='hand2'
             )
-            btn.pack(side='left', padx=2)
+            btn.pack(side='left', padx=3)
     
     def filter_credentials(self, event=None):
         """Filter displayed credentials based on search text"""
@@ -886,9 +914,7 @@ class VaultKeeperMainWindow:
             # Decrypt password
             decrypted_password = self.encryption.decrypt_data(encrypted_password, self.vault_key).decode()
             
-            # Copy to clipboard
-            self.root.clipboard_clear()
-            self.root.clipboard_append(decrypted_password)
+            self._copy_to_secure_clipboard(decrypted_password)
             
             # Mark as used
             mark_credential_used(cred_id)
@@ -896,18 +922,33 @@ class VaultKeeperMainWindow:
             # Show temporary notification
             self.update_status("Password copied to clipboard")
             
-            # Auto-clear clipboard after 30 seconds
-            self.root.after(30000, self.clear_clipboard)
-            
-            messagebox.showinfo("Copied", "Password copied to clipboard!\nIt will be cleared in 30 seconds.")
+            timeout = settings.get('security', 'clipboard_clear_timeout', 30)
+            messagebox.showinfo("Copied", f"Password copied to clipboard!\nIt will be cleared in {timeout} seconds.")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to copy password:\n{str(e)}")
     
     def clear_clipboard(self):
         """Clear clipboard for security"""
-        self.root.clipboard_clear()
+        try:
+            if self._clipboard_secret is None or self.root.clipboard_get() == self._clipboard_secret:
+                self.root.clipboard_clear()
+        except tk.TclError:
+            pass
+        self._clipboard_secret = None
         self.update_status("Clipboard cleared for security")
+
+    def _copy_to_secure_clipboard(self, secret):
+        """Copy a secret and clear it only if the user has not copied something else."""
+        if self._clipboard_after_id:
+            self.root.after_cancel(self._clipboard_after_id)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(secret)
+        self._clipboard_secret = secret
+        if not settings.get('security', 'clipboard_clear_enabled', True):
+            return
+        timeout = max(1, int(settings.get('security', 'clipboard_clear_timeout', 30)))
+        self._clipboard_after_id = self.root.after(timeout * 1000, self.clear_clipboard)
     
     def show_add_credential_screen(self):
         """Show screen to add new credential"""
@@ -915,76 +956,135 @@ class VaultKeeperMainWindow:
     
     def show_credential_form(self, credential_id=None):
         """Show form for adding or editing credentials"""
-        messagebox.showinfo("Coming Soon", "Credential form implementation in progress...")
+        existing = next((item for item in self.current_credentials if item[0] == credential_id), None)
+        form = tk.Toplevel(self.root)
+        form.title("Edit Credential" if existing else "Add Credential")
+        form.geometry("600x690")
+        form.minsize(540, 620)
+        form.configure(bg=self.colors['secondary'])
+        form.transient(self.root)
+        form.grab_set()
+        body = tk.Frame(form, bg=self.colors['secondary'])
+        body.pack(expand=True, fill='both', padx=28, pady=26)
+        tk.Label(body, text="Edit credential" if existing else "Add credential", font=('Arial', 20, 'bold'), fg=self.colors['text_light'], bg=self.colors['secondary']).pack(anchor='w')
+        tk.Label(body, text="Only encrypted values are saved to your vault.", font=('Arial', 10), fg=self.colors['text_muted'], bg=self.colors['secondary']).pack(anchor='w', pady=(3, 20))
+        fields = {}
+        for label, key, masked in (("Site", "site", False), ("Username", "username", False),
+                                   ("Password", "password", True), ("TOTP secret (optional)", "totp", True),
+                                   ("Tags (comma-separated)", "tags", False)):
+            tk.Label(body, text=label, font=('Arial', 9, 'bold'), bg=self.colors['secondary'], fg=self.colors['text_muted']).pack(anchor='w', pady=(10, 4))
+            entry = tk.Entry(body, show="*" if masked else "", bg='#ffffff', fg='#0f172a', insertbackground='#0f172a', relief=tk.FLAT, font=('Arial', 11))
+            entry.pack(fill='x', ipady=8)
+            fields[key] = entry
+        tk.Label(body, text="Secure notes (optional)", font=('Arial', 9, 'bold'), bg=self.colors['secondary'], fg=self.colors['text_muted']).pack(anchor='w', pady=(10, 4))
+        notes = scrolledtext.ScrolledText(body, height=7, bg='#ffffff', fg='#0f172a', insertbackground='#0f172a', relief=tk.FLAT, font=('Arial', 10), wrap=tk.WORD)
+        notes.pack(fill='both', expand=True)
+
+        if existing:
+            fields['site'].insert(0, existing[1])
+            fields['username'].insert(0, existing[2] or '')
+            for key, encrypted in (("password", existing[3]), ("totp", existing[5]), ("notes", existing[4])):
+                if encrypted:
+                    try:
+                        value = self.encryption.decrypt_data(encrypted, self.vault_key).decode('utf-8')
+                        if key == 'notes':
+                            notes.insert('1.0', value)
+                        else:
+                            fields[key].insert(0, value)
+                    except Exception:
+                        pass
+            fields['tags'].insert(0, ', '.join(json.loads(existing[6])) if existing[6] else '')
+
+        def breach_check():
+            try:
+                count = check_hibp_breach(fields['password'].get())
+                messagebox.showwarning("Password exposed", f"This password appears in {count:,} breaches.") if count else messagebox.showinfo("Password check", "No HIBP breach match found.")
+            except Exception as exc:
+                messagebox.showerror("Password check", str(exc))
+
+        def save():
+            site, password = fields['site'].get().strip(), fields['password'].get()
+            if not site or not password:
+                messagebox.showwarning("Missing data", "Site and password are required.")
+                return
+            note_value, totp_value = notes.get('1.0', tk.END).strip(), fields['totp'].get().strip()
+            tags = [tag.strip() for tag in fields['tags'].get().split(',') if tag.strip()]
+            encrypted_password = self.encryption.encrypt_data(password, self.vault_key)
+            encrypted_notes = self.encryption.encrypt_data(note_value, self.vault_key) if note_value else None
+            encrypted_totp = self.encryption.encrypt_data(totp_value, self.vault_key) if totp_value else None
+            strength = min(5, max(1, (self.password_gen.check_password_strength(password)['score'] + 1) // 2))
+            if existing:
+                # Empty bytes are an explicit clear marker; ``None`` means no
+                # change in the existing database API.
+                update_credential_advanced(existing[0], site=site, username=fields['username'].get().strip(), encrypted_password=encrypted_password, notes=encrypted_notes if encrypted_notes is not None else b'', encrypted_totp_secret=encrypted_totp if encrypted_totp is not None else b'', tags=tags)
+            else:
+                add_credential_advanced(site, fields['username'].get().strip(), encrypted_password, encrypted_notes, encrypted_totp, tags, strength)
+            form.destroy()
+            self.load_credentials()
+
+        controls = tk.Frame(body, bg=self.colors['secondary'])
+        controls.pack(fill='x', pady=(20, 0))
+        tk.Button(controls, text="Check breach", command=breach_check, bg=self.colors['surface_hover'], fg='white', relief=tk.FLAT, padx=12, pady=8).pack(side='left')
+        tk.Button(controls, text="Cancel", command=form.destroy, bg=self.colors['surface_hover'], fg='white', relief=tk.FLAT, padx=12, pady=8).pack(side='right')
+        tk.Button(controls, text="Save credential", command=save, bg=self.colors['accent'], fg='white', relief=tk.FLAT, font=('Arial', 10, 'bold'), padx=14, pady=8).pack(side='right', padx=(0, 8))
+        fields['site'].focus_set()
     
     def show_password_generator(self):
         """Show password generator interface"""
-        messagebox.showinfo("Coming Soon", "Password generator UI implementation in progress...")
+        PasswordGeneratorWindow(self.root, self.vault_key)
     
     def show_universal_storage(self):
         """Show universal storage interface for files and documents"""
         self.clear_content()
         self.update_status("Loading universal storage...")
         
-        # Main container
         storage_container = tk.Frame(self.content_frame, bg=self.colors['secondary'])
-        storage_container.pack(expand=True, fill='both', padx=15, pady=15)
-        
-        # Header
-        header_frame = tk.Frame(storage_container, bg=self.colors['primary'], relief=tk.RAISED, bd=1)
-        header_frame.pack(fill='x', pady=(0, 15))
-        
-        # Title
-        title_frame = tk.Frame(header_frame, bg=self.colors['primary'])
-        title_frame.pack(side='left', padx=15, pady=10)
-        
-        tk.Label(
-            title_frame,
-            text="📁 Universal Secure Storage",
-            font=('Arial', 18, 'bold'),
-            fg=self.colors['text_light'],
-            bg=self.colors['primary']
-        ).pack()
-        
-        # Action buttons
-        actions_frame = tk.Frame(header_frame, bg=self.colors['primary'])
-        actions_frame.pack(side='right', padx=15, pady=10)
+        storage_container.pack(expand=True, fill='both', padx=2, pady=2)
+        header_frame = tk.Frame(storage_container, bg=self.colors['surface'], highlightbackground=self.colors['border'], highlightthickness=1)
+        header_frame.pack(fill='x', pady=(0, 16))
+        tk.Label(header_frame, text="Files & secure items", font=('Arial', 20, 'bold'), fg=self.colors['text_light'], bg=self.colors['surface']).pack(anchor='w', padx=20, pady=(18, 2))
+        tk.Label(header_frame, text="Encrypted files, private notes, API tokens, and SSH keys", font=('Arial', 10), fg=self.colors['text_muted'], bg=self.colors['surface']).pack(anchor='w', padx=20, pady=(0, 14))
+        actions_frame = tk.Frame(header_frame, bg=self.colors['surface'])
+        actions_frame.pack(fill='x', padx=16, pady=(0, 16))
         
         tk.Button(
             actions_frame,
-            text="📤 Upload File",
+            text="Upload file",
             command=self._upload_file,
-            bg=self.colors['success'],
-            fg='white',
-            font=('Arial', 11, 'bold'),
-            padx=15,
-            pady=8,
-            relief=tk.FLAT,
-            cursor='hand2'
-        ).pack(side='left', padx=5)
-        
-        tk.Button(
-            actions_frame,
-            text="📝 Add Text Note",
-            command=self._add_text_note,
-            bg=self.colors['warning'],
-            fg='white',
-            font=('Arial', 11, 'bold'),
-            padx=15,
-            pady=8,
-            relief=tk.FLAT,
-            cursor='hand2'
-        ).pack(side='left', padx=5)
-        
-        tk.Button(
-            actions_frame,
-            text="🔙 Back to Vault",
-            command=self.show_vault_screen,
             bg=self.colors['accent'],
             fg='white',
-            font=('Arial', 11, 'bold'),
-            padx=15,
-            pady=8,
+            font=('Arial', 10, 'bold'), padx=12, pady=7,
+            relief=tk.FLAT,
+            cursor='hand2'
+        ).pack(side='left', padx=5)
+        
+        tk.Button(
+            actions_frame,
+            text="Add note",
+            command=self._add_text_note,
+            bg=self.colors['surface_hover'],
+            fg='white',
+            font=('Arial', 10, 'bold'), padx=12, pady=7,
+            relief=tk.FLAT,
+            cursor='hand2'
+        ).pack(side='left', padx=5)
+
+        tk.Button(
+            actions_frame,
+            text="Add API / SSH key",
+            command=self._add_key_material,
+            bg=self.colors['surface_hover'],
+            fg='white', font=('Arial', 10, 'bold'), padx=12, pady=7,
+            relief=tk.FLAT, cursor='hand2'
+        ).pack(side='left', padx=5)
+        
+        tk.Button(
+            actions_frame,
+            text="Back to vault",
+            command=self.show_vault_screen,
+            bg=self.colors['surface_hover'],
+            fg='white',
+            font=('Arial', 10, 'bold'), padx=12, pady=7,
             relief=tk.FLAT,
             cursor='hand2'
         ).pack(side='left', padx=5)
@@ -1334,6 +1434,37 @@ class VaultKeeperMainWindow:
             padx=20,
             pady=8
         ).pack(side='right')
+
+    def _add_key_material(self):
+        """Store API tokens and SSH private keys as encrypted universal items."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add API or SSH Key")
+        dialog.configure(bg=self.colors['secondary'])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        key_type = tk.StringVar(value="API key")
+        name = tk.StringVar()
+        tk.Label(dialog, text="Type", bg=self.colors['secondary'], fg=self.colors['text_light']).pack(anchor='w', padx=20, pady=(20, 2))
+        ttk.Combobox(dialog, textvariable=key_type, values=["API key", "SSH private key"], state='readonly').pack(padx=20, fill='x')
+        tk.Label(dialog, text="Name", bg=self.colors['secondary'], fg=self.colors['text_light']).pack(anchor='w', padx=20, pady=(10, 2))
+        tk.Entry(dialog, textvariable=name).pack(padx=20, fill='x')
+        tk.Label(dialog, text="Secret", bg=self.colors['secondary'], fg=self.colors['text_light']).pack(anchor='w', padx=20, pady=(10, 2))
+        secret = scrolledtext.ScrolledText(dialog, width=55, height=10)
+        secret.pack(padx=20)
+
+        def save_key():
+            value = secret.get('1.0', tk.END).strip()
+            if not name.get().strip() or not value:
+                messagebox.showwarning("Missing data", "Name and secret are required.")
+                return
+            if key_type.get() == "API key":
+                self.universal_storage.store_api_key(name.get().strip(), value)
+            else:
+                self.universal_storage.store_ssh_key(name.get().strip(), value)
+            dialog.destroy()
+            self._load_storage_items()
+
+        tk.Button(dialog, text="Save encrypted key", command=save_key, bg=self.colors['success'], fg='white').pack(pady=18)
 
     def _load_storage_items(self):
         """Load and display all storage items"""
@@ -1860,7 +1991,7 @@ class VaultKeeperMainWindow:
         session_section.pack(fill='x', padx=20, pady=10)
         
         # Clipboard auto-clear
-        self.clipboard_clear_var = tk.BooleanVar(value=True)
+        self.clipboard_clear_var = tk.BooleanVar(value=settings.get('security', 'clipboard_clear_enabled', True))
         tk.Checkbutton(
             session_section,
             text="Auto-clear clipboard after 30 seconds",
@@ -1967,7 +2098,7 @@ class VaultKeeperMainWindow:
         autolock_section.pack(fill='x', padx=20, pady=10)
         
         # Enable auto-lock
-        self.autolock_enabled_var = tk.BooleanVar(value=True)
+        self.autolock_enabled_var = tk.BooleanVar(value=settings.get('security', 'auto_lock_enabled', True))
         tk.Checkbutton(
             autolock_section,
             text="Enable auto-lock when inactive",
@@ -1991,7 +2122,7 @@ class VaultKeeperMainWindow:
             bg=self.colors['secondary']
         ).pack(side='left')
         
-        self.timeout_var = tk.StringVar(value="15 minutes")
+        self.timeout_var = tk.StringVar(value=f"{settings.get('security', 'auto_lock_timeout', 900) // 60} minutes")
         timeout_combo = ttk.Combobox(
             timeout_frame,
             textvariable=self.timeout_var,
@@ -2060,6 +2191,13 @@ class VaultKeeperMainWindow:
             pady=8
         ).pack(pady=10)
 
+        tk.Button(
+            maintenance_section,
+            text="💾 Create Encrypted Backup",
+            command=self.create_encrypted_backup,
+            bg=self.colors['success'], fg='white', font=('Arial', 11), padx=15, pady=8
+        ).pack(pady=(0, 10))
+
     def _create_about_settings(self, parent):
         """Create about section"""
         about_section = tk.Frame(parent, bg=self.colors['secondary'])
@@ -2114,29 +2252,98 @@ Features:
     # Helper methods for settings functionality
     def _enable_touchid(self):
         """Enable Touch ID authentication"""
-        messagebox.showinfo("Touch ID", "Touch ID setup initiated...")
+        if not self.vault_key:
+            messagebox.showerror("Touch ID", "Unlock the vault before enabling Touch ID.")
+            return
+        success, message = self.biometric.setup_secure_enclave_vault_key(self.vault_key)
+        if success:
+            enable_biometric_for_user()
+            settings.set('biometric', 'enable_touch_id', True)
+            messagebox.showinfo("Touch ID", "Touch ID is ready for vault unlock.")
+            self.show_settings()
+        else:
+            messagebox.showerror("Touch ID", message)
 
     def _disable_touchid(self):
         """Disable Touch ID authentication"""
         result = messagebox.askyesno("Confirm", "Disable Touch ID authentication?")
         if result:
-            messagebox.showinfo("Touch ID", "Touch ID disabled successfully")
+            if self.biometric.remove_touchid_data():
+                set_biometric_for_user(False)
+                settings.set('biometric', 'enable_touch_id', False)
+                messagebox.showinfo("Touch ID", "Touch ID has been disabled.")
+                self.show_settings()
+            else:
+                messagebox.showerror("Touch ID", "Unable to remove the Keychain item.")
 
     def _reset_touchid(self):
         """Reset Touch ID setup"""
-        messagebox.showinfo("Touch ID", "Touch ID reset initiated...")
+        self.biometric.remove_touchid_data()
+        set_biometric_for_user(False)
+        self._enable_touchid()
 
     def _change_master_password(self):
         """Change master password"""
-        messagebox.showinfo("Security", "Master password change initiated...")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change master password")
+        dialog.geometry("460x370")
+        dialog.configure(bg=self.colors['secondary'])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        body = tk.Frame(dialog, bg=self.colors['secondary'])
+        body.pack(expand=True, fill='both', padx=28, pady=26)
+        tk.Label(body, text="Change master password", font=('Arial', 18, 'bold'), fg=self.colors['text_light'], bg=self.colors['secondary']).pack(anchor='w')
+        tk.Label(body, text="Your vault data stays encrypted with the same vault key.", font=('Arial', 10), fg=self.colors['text_muted'], bg=self.colors['secondary']).pack(anchor='w', pady=(3, 18))
+        entries = {}
+        for label, key in (("Current password", "current"), ("New password", "new"), ("Confirm new password", "confirm")):
+            tk.Label(body, text=label, font=('Arial', 9, 'bold'), fg=self.colors['text_muted'], bg=self.colors['secondary']).pack(anchor='w', pady=(9, 4))
+            entry = tk.Entry(body, show='*', bg='white', fg='#0f172a', insertbackground='#0f172a', relief=tk.FLAT, font=('Arial', 11))
+            entry.pack(fill='x', ipady=8)
+            entries[key] = entry
+
+        def save_change():
+            current, new, confirm = (entries[key].get() for key in ('current', 'new', 'confirm'))
+            user = get_user_advanced()
+            try:
+                self.encryption.ph.verify(user[0], current)
+            except Exception:
+                entries['current'].delete(0, tk.END)
+                messagebox.showerror("Change password", "Current password is incorrect.")
+                return
+            if len(new) < 12 or new != confirm:
+                messagebox.showerror("Change password", "Use a matching master password of at least 12 characters.")
+                return
+            salt = self.encryption.generate_master_salt()
+            master_key = self.encryption.derive_master_key(new, salt)
+            update_master_password_data(self.encryption.ph.hash(new), salt, self.encryption.encrypt_vault_key(self.vault_key, master_key))
+            self.session_key = master_key
+            for entry in entries.values():
+                entry.delete(0, tk.END)
+            log_audit_action("MASTER_PASSWORD_CHANGED", success=True)
+            dialog.destroy()
+            messagebox.showinfo("Change password", "Master password updated.")
+
+        actions = tk.Frame(body, bg=self.colors['secondary'])
+        actions.pack(fill='x', pady=(22, 0))
+        tk.Button(actions, text="Cancel", command=dialog.destroy, bg=self.colors['surface_hover'], fg='white', relief=tk.FLAT, padx=12, pady=8).pack(side='right')
+        tk.Button(actions, text="Update password", command=save_change, bg=self.colors['accent'], fg='white', relief=tk.FLAT, padx=12, pady=8).pack(side='right', padx=(0, 8))
+        entries['current'].focus_set()
 
     def _save_security_settings(self):
         """Save security settings"""
-        pass
+        settings.set('security', 'clipboard_clear_enabled', self.clipboard_clear_var.get())
 
     def _save_autolock_settings(self):
         """Save auto-lock settings"""
-        pass
+        settings.set('security', 'auto_lock_enabled', self.autolock_enabled_var.get())
+        timeout = int(self.timeout_var.get().split()[0]) * 60
+        settings.set('security', 'auto_lock_timeout', timeout)
+        if self.auto_lock_monitor:
+            self.auto_lock_monitor.stop()
+            self.auto_lock_monitor = None
+        if self.autolock_enabled_var.get() and self.is_authenticated:
+            self.auto_lock_monitor = AutoLockMonitor(self.root, self.lock_vault, timeout)
+            self.auto_lock_monitor.start()
 
     def _optimize_database(self):
         """Optimize database performance"""
@@ -2146,13 +2353,52 @@ Features:
         except Exception as e:
             messagebox.showerror("Error", f"Database optimization failed:\n{str(e)}")
     
+    def show_password_health(self):
+        report = PasswordSecurityAnalyzer(self.encryption, self.vault_key).analyze_credentials(self.current_credentials)
+        duplicate_lines = [" / ".join(item['site'] for item in group) for group in report['duplicates']]
+        weak_lines = [item['site'] for item in report['weak']]
+        text = f"Reused passwords: {len(duplicate_lines)}\n" + ("\n".join(duplicate_lines) or "None")
+        text += f"\n\nWeak passwords: {len(weak_lines)}\n" + ("\n".join(weak_lines) or "None")
+        if report['unreadable']:
+            text += f"\n\nUnreadable encrypted entries: {len(report['unreadable'])}"
+        messagebox.showinfo("Password Health", text)
+
+    def create_encrypted_backup(self):
+        if not self.backup_manager:
+            messagebox.showerror("Backup", "Unlock the vault before creating a backup.")
+            return
+        try:
+            output = self.backup_manager.create_backup(settings.get('backup', 'backup_location'))
+            log_audit_action("BACKUP_CREATED", "backup", success=True, details=output.name)
+            messagebox.showinfo("Backup", f"Encrypted backup created:\n{output}")
+        except Exception as exc:
+            messagebox.showerror("Backup", f"Backup failed:\n{exc}")
+
     def view_credential(self, cred_id):
-        """View detailed credential information"""
-        messagebox.showinfo("Coming Soon", f"View credential {cred_id} - Implementation in progress...")
+        """View an encrypted credential only after it is decrypted in memory."""
+        credential = next((item for item in self.current_credentials if item[0] == cred_id), None)
+        if not credential:
+            return
+        try:
+            password = self.encryption.decrypt_data(credential[3], self.vault_key).decode('utf-8')
+            notes = self.encryption.decrypt_data(credential[4], self.vault_key).decode('utf-8') if credential[4] else ''
+            details = f"Site: {credential[1]}\nUsername: {credential[2] or ''}\nPassword: {password}\n"
+            if credential[5]:
+                secret = self.encryption.decrypt_data(credential[5], self.vault_key).decode('utf-8')
+                try:
+                    manager = TOTPManager(self.vault_key)
+                    details += f"TOTP: {manager.get_current_code(secret)} ({manager.get_time_remaining()}s remaining)\n"
+                except RuntimeError:
+                    details += "TOTP: configured (install pyotp to display current code)\n"
+            if notes:
+                details += f"\nNotes:\n{notes}"
+            messagebox.showinfo("Credential", details)
+        except Exception as exc:
+            messagebox.showerror("Credential", f"Unable to decrypt credential: {exc}")
     
     def edit_credential(self, cred_id):
         """Edit existing credential"""
-        messagebox.showinfo("Coming Soon", f"Edit credential {cred_id} - Implementation in progress...")
+        self.show_credential_form(cred_id)
     
     def delete_credential(self, cred_id, site):
         """Delete credential after confirmation"""
@@ -2172,10 +2418,13 @@ Features:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to delete credential:\n{str(e)}")
     
-    def lock_vault(self):
+    def lock_vault(self, reason="manual"):
         """Lock the vault and return to login"""
         # Log the action
-        log_audit_action("VAULT_LOCKED", success=True, details="Vault manually locked")
+        log_audit_action("VAULT_LOCKED", success=True, details=f"Vault locked: {reason}")
+        if self.auto_lock_monitor:
+            self.auto_lock_monitor.stop()
+            self.auto_lock_monitor = None
         
         # Clear session data
         self.session_key = None
@@ -2184,12 +2433,16 @@ Features:
         self.universal_storage = None
         self.current_credentials = []
         self.current_storage_items = []
+        self.backup_manager = None
+        set_audit_encryption_key(None)
+        self.session_badge.config(text="LOCKED", fg='#bfdbfe', bg='#1e3a5f')
         
         # Clear clipboard for security
         self.clear_clipboard()
         
         self.update_status("Vault locked")
-        messagebox.showinfo("Locked", "🔒 Vault has been locked securely")
+        if reason == "manual":
+            messagebox.showinfo("Locked", "🔒 Vault has been locked securely")
         self.show_login_screen()
     
     def clear_content(self):

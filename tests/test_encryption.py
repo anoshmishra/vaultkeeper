@@ -284,19 +284,12 @@ class TestEncryption(unittest.TestCase):
             self.encryption.encrypt_data(self.test_data, None)
     
     def test_encryption_metadata(self):
-        """Test that encrypted data contains proper Fernet metadata"""
+        """Test that ciphertext is versioned AES-256-GCM with a fresh nonce."""
         vault_key = self.encryption.generate_vault_key()
         encrypted = self.encryption.encrypt_data(self.test_data, vault_key)
-        
-        # Fernet tokens should be base64 decodable
-        try:
-            base64.urlsafe_b64decode(encrypted)
-        except Exception:
-            self.fail("Encrypted data is not valid base64")
-        
-        # Should be proper Fernet format (starts with version byte)
-        decoded = base64.urlsafe_b64decode(encrypted)
-        self.assertGreaterEqual(len(decoded), 45)  # Minimum Fernet token size
+
+        self.assertTrue(encrypted.startswith(b"VK1"))
+        self.assertGreaterEqual(len(encrypted), 3 + 12 + 16)
     
     def test_master_key_base64_encoding(self):
         """Test that master keys are properly base64 encoded"""
