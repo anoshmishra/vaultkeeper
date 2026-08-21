@@ -211,3 +211,29 @@ __marimo__/
 
 # Local VaultKeeper databases
 *.db
+
+
+__pycache__/
+*.py[cod]
+*.pyo
+
+
+.DS_Store
+
+
+*.db
+*.sqlite
+*.sqlite3
+
+
+*.backup
+*.bak
+
+venv/
+.venv/
+
+# Test / tooling cache
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/

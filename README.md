@@ -1,268 +1,67 @@
-# vaultkeeper
+# VaultKeeper
 
+<p align="center">
+  <strong>Secure Local Vault for Passwords, Secrets, Notes & Files</strong><br>
+  Privacy-first • Offline-first • macOS • Touch ID
+</p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS-black?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/python-3.8%2B-blue?style=flat-square" alt="Python">
+  <img src="https://img.shields.io/badge/security-encrypted-green?style=flat-square" alt="Security">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square" alt="License">
+</p>
 
+<p align="center">
+  A local-first encrypted vault for credentials, notes, files, TOTP secrets and other sensitive data.
+</p>
 
+---
 
+## Overview
 
+VaultKeeper is a macOS-focused security application designed to keep sensitive information inside a local encrypted vault.
 
-VaultKeeper is a modern, zero-knowledge encrypted password manager designed for macOS. It integrates Touch ID, supports universal encrypted storage (credentials, files, notes), and provides a professional dark-themed UI.
+It combines:
 
-VaultKeeper ensures military-grade encryption, biometric authentication, and zero data leakage, making it ideal for both personal security and enterprise-grade protection.
+- Password-based authentication
+- Argon2id password protection
+- macOS Touch ID integration
+- Encrypted credentials
+- Secure notes
+- Encrypted file storage
+- Password generation and analysis
+- TOTP management
+- Backup management
+- Session security
+- Security and activity controls
 
-✨ Key Features
-🔒 Advanced Security
+VaultKeeper is designed around one principle:
 
-Zero-Knowledge Design – Data is encrypted locally; developers cannot access your secrets.
+> **Sensitive data should remain under the user's control.**
 
-AES-256 Encryption – Robust, industry-standard symmetric encryption.
+The application is designed for local and offline operation rather than relying on a remote service to store vault contents.
 
-Argon2id Password Hashing – Memory-hard password hashing algorithm.
+---
 
-PBKDF2 Key Derivation – With 100,000+ iterations.
+## Security Architecture
 
-Secure Memory Handling – Clears sensitive data after use.
+```mermaid
+flowchart TD
+    A[User] --> B{Authentication}
 
-👆 Biometric Authentication
+    B -->|Master Password| C[Key Derivation]
+    B -->|Touch ID| D[macOS Authentication]
 
-Touch ID Integration – Faster, hardware-level security.
+    C --> E[Vault Key]
+    D --> E
 
-macOS Secure Enclave support.
+    E --> F[Encrypted Vault]
 
-Master Password Fallback in case biometrics fail.
+    F --> G[Credentials]
+    F --> H[Secure Notes]
+    F --> I[Encrypted Files]
+    F --> J[TOTP and Secrets]
 
-Auto-lock & session management after inactivity.
-
-📦 Universal Storage
-
-Store documents, images, and videos (up to 100MB each).
-
-Encrypted text notes with full-text search.
-
-Organize with categories and tags.
-
-🔑 Password Management
-
-Customizable password generator with length, charset, symbols.
-
-Strength analysis with real-time feedback.
-
-Presets: PIN, passphrase, high-security, web-safe.
-
-Exclude ambiguous characters for usability.
-
-🎨 User Interface
-
-Dark theme for eye comfort.
-
-Clean navigation with categorized views.
-
-Smart search & filtering.
-
-Favorites system for frequently used items.
-
-📊 Auditing & Analytics
-
-Activity logs of operations.
-
-Usage statistics & password strength metrics.
-
-Breach detection (check for compromised credentials).
-
-Automated backups with retention policies.
-
-⚡ Quick Start
-Prerequisites
-
-macOS 10.15+ (Touch ID support requires Apple Silicon).
-
-Python 3.8+
-
-Xcode Command Line Tools
-
-2GB RAM, 100MB free space
-
-Installation
-git clone https://github.com/anoshmishra/vaultkeeper.git
-cd vaultkeeper
-
-python3 -m venv venv
-source venv/bin/activate
-
-pip install -r requirements.txt
-python3 main.py
-
-First-Time Setup
-
-Launch: python3 main.py
-
-Create a master password (cannot be recovered).
-
-Optionally enable Touch ID.
-
-Configure:
-
-Auto-lock timeout (default: 15 min).
-
-Clipboard auto-clear (default: 30s).
-
-Backup location & retention.
-
-🛠 Project Architecture
-vaultkeeper/
-│── main.py                  # Application entry point
-│── README.md                # Documentation
-│── requirements.txt         # Dependencies
-│── LICENSE                  # MIT License
-│
-├── config/                  # Settings & preferences
-├── ui/                      # User interface (main window, generator, settings)
-├── advanced/                # Core modules: encryption, biometrics, DB, storage
-├── tests/                   # Unit and security test suite
-└── tools/                   # Utilities: debug, migration, schema fix, recovery
-
-📖 Usage Guide
-Launch Options
-python3 main.py          # Standard launch
-python3 main.py --debug  # With logging
-python3 main.py --version
-
-Credentials
-
-Add Password → Site, username, password.
-
-Edit → Modify existing credentials.
-
-Copy → Clipboard clears after 30s.
-
-Favorites → Mark with ⭐.
-
-Storage
-
-Upload Files – encrypted in vault.
-
-Add Notes – encrypted with full-text search.
-
-Organize – by tags, categories, and type.
-
-Search & Organization
-
-Real-time search bar.
-
-Filter by type (notes, files, credentials).
-
-Sort by name, date, usage.
-
-🔧 Troubleshooting
-Common Issues
-
-Invalid Master Password
-
-Check spelling.
-
-Run tools/test_auth.py.
-
-Run tools/debug_vault_data.py.
-
-Database Schema Errors
-
-python3 tools/fix_database_schema.py
-
-
-Touch ID Not Working
-
-macOS 10.15+, enrolled fingerprints.
-
-Run:
-
-python3 -c "from advanced.biometric_auth import BiometricAuth; BiometricAuth().debug_touchid_setup()"
-
-
-App Won’t Start
-
-python3 --version
-source venv/bin/activate
-pip install -r requirements.txt
-python3 -v main.py
-
-🔐 Security Architecture
-Encryption Flow
-
-User enters master password.
-
-Master key derived via PBKDF2 + salt.
-
-Vault key (stored encrypted) unlocked.
-
-Vault key decrypts data.
-
-(Optional) Touch ID decrypts stored key in macOS Keychain.
-
-Data Protection
-
-AES-256 Fernet authenticated encryption.
-
-Unique IV & salt per operation.
-
-Argon2id hashing for passwords.
-
-Session keys cleared from memory.
-
-Zero-knowledge – no recovery without master password.
-
-👩‍💻 Development
-Dev Setup
-pip install -r requirements-dev.txt
-pre-commit install
-
-Tests
-pytest tests/ -v
-pytest --cov=advanced --cov-report=html
-
-Code Quality
-flake8 advanced/ ui/ tests/
-pylint advanced/ ui/
-mypy advanced/ ui/
-bandit -r advanced/ ui/
-
-⚠ Security Notes
-
-Master Password cannot be recovered – backup required.
-
-Backups must be tested regularly.
-
-VaultKeeper runs offline only – no telemetry, no servers.
-
-Keep macOS + FileVault updated for full security.
-
-📜 License
-
-MIT License © 2024–2025 Anosh Mishra
-
-🙌 Acknowledgments
-
-Lead Developer: Anosh Mishra
-
-Community contributors: Testing, feedback
-
-Special thanks: Python Cryptography, macOS Security, OWASP
-
-📬 Support
-
-GitHub Issues – Bug reports & features.
-
-Email – Security vulnerabilities.
-
-General support – anoshmishra09@gmail.com
-
-🧾 Important Takeaways
-
-VaultKeeper is offline-only (highest privacy).
-
-Master password is critical → no recovery if lost.
-
-Touch ID + Secure Enclave provide hardware-level security.
-
-Universal encrypted storage → passwords, files, notes.
-
-Automated backups are essential for disaster recovery.
+    K[Session Security] --> F
+    L[Encrypted Backups] --> F
